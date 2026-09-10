@@ -29,7 +29,7 @@ MODEL_PROVIDERS: list[dict] = [
     "name": "gpt",
     "api_key_env": "GPT_API_KEY",
     "base_url_env": "GPT_BASE_URL",
-    "default_base_url": "https://你的中转站地址/v1",
+    "default_base_url": "https://anyrouter.top",
     "models": [
         "gpt-6-astra"
     ],
