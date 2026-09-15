@@ -26,14 +26,14 @@ USER_AGENT = (
 # 现的那条；这避免 Summarizer 内部按 name 索引 client 字典时被后写覆盖。
 MODEL_PROVIDERS: list[dict] = [
     {
-    "name": "gpt",
-    "api_key_env": "GPT_API_KEY",
-    "base_url_env": "GPT_BASE_URL",
-    "default_base_url": "https://anyrouter.top",
-    "models": [
-        "gpt-6-astra"
-    ],
-},
+        "name": "deepseek",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "base_url_env": "DEEPSEEK_BASE_URL",
+        "default_base_url": "https://api.deepseek.com/v1",
+        "models": [
+            "deepseek-flash"
+        ],
+    },
     {
         "name": "modelscope",
         "api_key_env": "DASHSCOPE_API_KEY",
@@ -44,15 +44,7 @@ MODEL_PROVIDERS: list[dict] = [
             "deepseek-ai/DeepSeek-V4-Flash"
         ],
     },
-    {
-        "name": "deepseek",
-        "api_key_env": "DEEPSEEK_API_KEY",
-        "base_url_env": "DEEPSEEK_BASE_URL",
-        "default_base_url": "https://api.deepseek.com/v1",
-        "models": [
-            "deepseek-v4-pro"
-        ],
-    },
+    
     # {
     #     "name": "modelscope",
     #     "api_key_env": "DASHSCOPE_API_KEY",
