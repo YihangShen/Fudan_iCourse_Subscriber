@@ -26,6 +26,15 @@ USER_AGENT = (
 # 现的那条；这避免 Summarizer 内部按 name 索引 client 字典时被后写覆盖。
 MODEL_PROVIDERS: list[dict] = [
     {
+        "name": "Fudan",
+        "api_key_env": "FUDAN_API_KEY",
+        "base_url_env": "FUDAN_BASE_URL",
+        "default_base_url": "https://llmapi.paratera.com",
+        "models": [
+            "GLM-5.3-Flash"
+        ],
+    },
+    {
         "name": "deepseek",
         "api_key_env": "DEEPSEEK_API_KEY",
         "base_url_env": "DEEPSEEK_BASE_URL",
