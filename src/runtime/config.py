@@ -34,48 +34,7 @@ MODEL_PROVIDERS: list[dict] = [
             "GLM-5.3-Flash"
         ],
     },
-    {
-        "name": "deepseek",
-        "api_key_env": "DEEPSEEK_API_KEY",
-        "base_url_env": "DEEPSEEK_BASE_URL",
-        "default_base_url": "https://api.deepseek.com/v1",
-        "models": [
-            "deepseek-flash"
-        ],
-    },
-    {
-        "name": "modelscope",
-        "api_key_env": "DASHSCOPE_API_KEY",
-        "base_url_env": "DASHSCOPE_BASE_URL",
-        "default_base_url": "https://api-inference.modelscope.cn/v1/",
-        "models": [
-            "deepseek-ai/DeepSeek-V4-Pro",
-            "deepseek-ai/DeepSeek-V4-Flash"
-        ],
-    },
     
-    # {
-    #     "name": "modelscope",
-    #     "api_key_env": "DASHSCOPE_API_KEY",
-    #     "base_url_env": "DASHSCOPE_BASE_URL",
-    #     "default_base_url": "https://api-inference.modelscope.cn/v1/",
-    #     "models": [
-    #         "deepseek-ai/DeepSeek-V3.2",
-    #         "ZhipuAI/GLM-5",
-    #         "MiniMax/MiniMax-M2.5",
-    #         "Qwen/Qwen3.5-397B-A17B",
-    #     ],
-    # },
-    {
-        "name": "gemini",
-        "api_key_env": "GEMINI_API_KEY",
-        "base_url_env": "GEMINI_BASE_URL",
-        "default_base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
-        "models": [
-            "gemini-2.5-flash",
-            "gemini-3-flash-preview",
-        ],
-    }
 ]
 
 
