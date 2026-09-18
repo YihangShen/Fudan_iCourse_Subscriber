@@ -33,7 +33,7 @@ MODEL_PROVIDERS: list[dict] = [
         "models": [
             "GLM-5.3-Flash"
         ],
-    },
+    }
     
 ]
 
