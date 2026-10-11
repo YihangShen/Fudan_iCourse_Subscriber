@@ -31,7 +31,7 @@ MODEL_PROVIDERS: list[dict] = [
         "base_url_env": "FUDAN_BASE_URL",
         "default_base_url": "https://llmapi.paratera.com",
         "models": [
-            "GLM-5.3-Flash"
+            "Deepseek-Flash"
         ],
     }
     
