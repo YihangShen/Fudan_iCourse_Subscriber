@@ -27,9 +27,9 @@ USER_AGENT = (
 MODEL_PROVIDERS: list[dict] = [
     {
         "name": "Fudan",
-        "api_key_env": "FUDAN_API_KEY",
-        "base_url_env": "FUDAN_BASE_URL",
-        "default_base_url": "https://llmapi.paratera.com",
+        "api_key_env": "DEEPSEEK_API_KEY",
+        "base_url_env": "DEEPSEEK_BASE_URL",
+        
         "models": [
             "Deepseek-Flash"
         ],
