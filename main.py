@@ -69,7 +69,8 @@ def _check_session(client: ICourseClient) -> None:
 
 
 def _enumerate_lectures(client: ICourseClient, db: Database,
-                        reporter: Reporter) -> list[tuple[str, str, dict]]:
+                        reporter: Reporter,
+                        failures: list[str]) -> list[tuple[str, str, dict]]:
     """Sync, fast: list every (course_id, course_title, lecture) we'll
     process this run.  Done up-front so the prefetch loop can see across
     course boundaries when picking the "next" lecture."""
@@ -140,6 +141,7 @@ def _enumerate_lectures(client: ICourseClient, db: Database,
                 )
                 out.append((course_id, course_title, lecture))
         except Exception:
+            failures.append(f"Course {course_id}: enumeration failed")
             reporter.course_enumeration_error(course_id)
             traceback.print_exc()
     return out
@@ -149,7 +151,7 @@ def _drive_lectures(client: ICourseClient, db: Database,
                     scheduler: Scheduler, transcriber: Transcriber,
                     summarizer: Summarizer, reporter: Reporter,
                     all_lectures: list[tuple[str, str, dict]],
-                    email_items: list) -> None:
+                    email_items: list, failures: list[str]) -> None:
     """Phase 2: run each lecture through LectureRunner.
 
     Pre-schedules the first lecture's prefetch (audio + images) before
@@ -173,8 +175,8 @@ def _drive_lectures(client: ICourseClient, db: Database,
             next_course, _, next_lec = all_lectures[i + 1]
             next_info = (next_course, str(next_lec["sub_id"]))
 
-        _check_session(client)
         try:
+            _check_session(client)
             summary = runner.run(
                 course_id, course_title, lecture, next_info=next_info,
             )
@@ -186,7 +188,13 @@ def _drive_lectures(client: ICourseClient, db: Database,
                     "date": lecture.get("date", ""),
                     "summary": summary,
                 })
+            else:
+                row = db.get_lecture(sub_id)
+                if (row and not row.get("processed_at")
+                        and row.get("error_stage") not in (None, "no_video")):
+                    failures.append(f"Lecture {sub_id}: {row['error_stage']} failed")
         except Exception:
+            failures.append(f"Lecture {sub_id}: processing failed")
             reporter.lecture_error(sub_id)
             traceback.print_exc()
         finally:
@@ -214,17 +222,24 @@ def _send_email(emailer: Emailer | None, db: Database, reporter: Reporter,
                 })
         reporter.email_recovered_unsent(len(unsent))
 
-    if not (emailer and email_items):
+    if not email_items:
+        reporter.info("[Email] No new or previously unsent notes; no email sent.")
         return
+    if emailer is None:
+        missing = [name for name in ("SMTP_EMAIL", "SMTP_PASSWORD", "RECEIVER_EMAIL")
+                   if not getattr(config, name).strip()]
+        raise RuntimeError("Email not configured: " + ", ".join(missing)
+                           + ". Notes remain unsent for retry.")
     try:
         reporter.email_summary(len(email_items))
         if emailer.send(email_items):
             db.mark_emailed_batch([item["sub_id"] for item in email_items])
         else:
             reporter.email_failed()
+            raise RuntimeError("SMTP delivery failed; notes remain unsent for retry.")
     except Exception:
         reporter.info("[Email] Failed to send:")
-        traceback.print_exc()
+        raise
 
 
 def _crawl_semester_catalog(client: ICourseClient, db: Database,
@@ -295,7 +310,8 @@ def run():
     transcriber = Transcriber()
     summarizer = Summarizer() if config.COURSE_IDS else None
     emailer = Emailer() if (
-        config.SMTP_EMAIL and config.SMTP_PASSWORD
+        config.SMTP_EMAIL.strip() and config.SMTP_PASSWORD.strip()
+        and config.RECEIVER_EMAIL.strip()
     ) else None
 
     vpn = login_with_retry()
@@ -318,18 +334,31 @@ def run():
         return
 
     scheduler = Scheduler(reporter=reporter)
+    failures: list[str] = []
 
     try:
-        all_lectures = _enumerate_lectures(client, db, reporter)
+        all_lectures = _enumerate_lectures(client, db, reporter, failures)
         _drive_lectures(
             client, db, scheduler, transcriber, summarizer, reporter,
-            all_lectures, email_items,
+            all_lectures, email_items, failures,
         )
-
+    except Exception:
+        failures.append("Lecture pipeline failed")
+        traceback.print_exc()
     finally:
         scheduler.shutdown()
 
-    _send_email(emailer, db, reporter, email_items)
+    # Deliver completed notes even if other lectures failed. Only successful
+    # SMTP submissions are marked emailed, so failures are retried next run.
+    try:
+        _send_email(emailer, db, reporter, email_items)
+    except Exception:
+        failures.append("Email delivery failed")
+        traceback.print_exc()
+    if failures:
+        for failure in failures:
+            reporter.info(f"[FAIL] {failure}")
+        raise RuntimeError(f"Run finished with {len(failures)} failure(s); see logs above.")
     reporter.run_footer()
 
 

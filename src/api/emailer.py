@@ -7,11 +7,10 @@ import requests
 from io import BytesIO
 from PIL import Image
 from collections import OrderedDict
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.image import MIMEImage
+from email.message import EmailMessage
+from email.policy import SMTP
 from html import escape
-from email.utils import formataddr
+from email.utils import formataddr, formatdate, make_msgid
 from urllib.parse import quote
 
 import markdown
@@ -272,153 +271,139 @@ def _resolve_src(url: str, img_data: bytes | None,
     return url
 
 
+def _important_notices(summary: str) -> str:
+    """Extract explicit notice sections, retaining nested headings and lists.
+
+    Do not infer deadlines or treat absence of this section as absence of
+    homework. Old summaries without a notice heading remain intact in the MD.
+    """
+    sections = []
+    active_level = None
+    fence = None
+    for line in summary.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(("```", "~~~")):
+            marker = stripped[:3]
+            fence = None if fence == marker else (fence or marker)
+            if active_level is not None:
+                sections.append(line)
+            continue
+        if fence:
+            if active_level is not None:
+                sections.append(line)
+            continue
+        heading = re.match(r"^#{1,6}\s+(.+?)\s*#*\s*$", stripped)
+        title = heading.group(1) if heading else stripped
+        title = title.strip("* _【】[]：:")
+        is_notice = title in {"课程事项提醒", "课程事项", "重要事项提醒", "重要事项"}
+        if heading:
+            level = len(stripped) - len(stripped.lstrip("#"))
+            if active_level is not None and level <= active_level:
+                active_level = None
+            if is_notice:
+                active_level = level
+                continue
+        elif is_notice:
+            active_level = 6  # a legacy standalone bold label
+            continue
+        if active_level is not None:
+            sections.append(line)
+    text = "\n".join(sections).strip()
+    # Plain text only; preserve the actual wording, numbers and URLs.
+    text = re.sub(r"!\[([^]]*)\]\([^)]+\)", r"\1", text)
+    text = re.sub(r"\[([^]]+)\]\(([^)]+)\)", r"\1 (\2)", text)
+    text = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", text)
+    text = text.replace("**", "").replace("__", "").replace("`", "")
+    return text or "笔记未单独列出课程事项，请查阅附件确认。"
+
+
+def _header_text(value: str) -> str:
+    return " ".join(str(value).splitlines()).strip()
+
+
+def _attachment_name(item: dict, index: int) -> str:
+    label = "_".join(str(item.get(k) or "") for k in ("course_title", "date", "sub_title"))
+    label = re.sub(r'[\x00-\x1f\x7f/\\:*?"<>|]', "_", label).strip(" ._")
+    return f"{index:03d}_{label[:100] or '课程笔记'}.md"
+
+
 class Emailer:
-    """Send course summary emails via QQ SMTP SSL."""
+    """Send UTF-8 plain-text notices with complete Markdown attachments."""
 
     def __init__(self):
         self.host = config.SMTP_HOST
         self.port = config.SMTP_PORT
-        self.sender = config.SMTP_EMAIL
-        self.password = config.SMTP_PASSWORD
-        self.receiver = config.RECEIVER_EMAIL
+        self.sender = config.SMTP_EMAIL.strip()
+        self.password = config.SMTP_PASSWORD.strip()
+        self.receiver = config.RECEIVER_EMAIL.strip()
 
-    def send(self, items: list[dict]) -> bool:
-        """Send a single email containing all lecture summaries.
-
-        LaTeX formulas are rendered as PNG images and embedded directly into
-        the email via CID attachments, so they display on all clients
-        (including mobile) without loading external images.
-
-        Args:
-            items: List of dicts, each with keys:
-                   course_title, sub_title, date, summary
-                   Optional key:
-                   is_update — bool, True for re-summarized lectures (v2
-                               PPT-aware format replacing an older v1 summary).
-                               Adds an "（含 PPT 识别·更新）" subject suffix and
-                               an inline 更新 badge per affected lecture.
-
-        Returns:
-            True if email was sent successfully, False otherwise.
-        """
-        if not items:
-            return True
-
-        any_update = any(item.get("is_update") for item in items)
-
-        # Group by course (preserve insertion order)
+    def _build_message(self, items: list[dict]) -> EmailMessage:
         courses: OrderedDict[str, list[dict]] = OrderedDict()
         for item in items:
             courses.setdefault(item["course_title"], []).append(item)
-
-        # Subject
-        parts = [f"{ct} ({len(lecs)})" for ct, lecs in courses.items()]
-        subject = f"[FiCS] {', '.join(parts)}"
-        if any_update:
-            subject += "（含 PPT 识别·更新）"
-
-        # Plain text (Markdown as-is, readable without rendering)
-        plain_sections = []
-        for course_title, lectures in courses.items():
-            plain_sections.append(f"{'=' * 40}")
-            plain_sections.append(f"课程：{course_title}")
-            plain_sections.append(f"{'=' * 40}")
-            for lec in lectures:
-                tag = "[更新] " if lec.get("is_update") else ""
-                plain_sections.append(
-                    f"\n--- {tag}{lec['sub_title']} ({lec['date']}) ---\n"
-                )
-                plain_sections.append(lec["summary"])
-        plain = "\n".join(plain_sections)
-
-        # HTML (Markdown → styled HTML with CID-embedded LaTeX images)
-        cid_images: dict[str, bytes] = {}
-
-        # Pre-compute one anchor ID per course so TOC and headings stay in sync
-        course_anchors = {
-            course_title: f"course-{i}"
-            for i, course_title in enumerate(courses)
-        }
-
-        # Build table of contents
-        toc_items = [
-            f'<li><a href="#{anchor}" style="color:#3498db;text-decoration:none;">'
-            f"{escape(course_title)}</a></li>"
-            for course_title, anchor in course_anchors.items()
-        ]
-        toc_html = (
-            '<nav style="background:#f8f9fa;border:1px solid #e0e0e0;'
-            'border-radius:6px;padding:16px 20px;margin-bottom:28px;">'
-            '<strong style="color:#2c3e50;font-size:16px;">目录</strong>'
-            '<ol style="margin:8px 0 0;padding-left:20px;">'
-            + "\n".join(toc_items)
-            + "</ol></nav>"
+        subject = "[FiCS] " + ", ".join(
+            f"{_header_text(title)} ({len(lectures)})"
+            for title, lectures in courses.items()
         )
+        if any(item.get("is_update") for item in items):
+            subject += "（笔记更新）"
 
-        update_badge = (
-            '<span style="background:#ff9800;color:white;padding:2px 8px;'
-            'border-radius:3px;font-size:12px;margin-right:8px;'
-            'vertical-align:middle;">更新</span>'
-        )
+        body = ["课程事项提醒", "完整课程笔记见随信附带的 .md 文件（UTF-8 编码）。",
+                "附件保留 Markdown 排版和 LaTeX 公式。", ""]
+        attachments = []
+        for index, item in enumerate(items, 1):
+            filename = _attachment_name(item, index)
+            title = _header_text(item["course_title"])
+            lecture = _header_text(item.get("sub_title", ""))
+            date = _header_text(item.get("date", ""))
+            body.extend([f"{index}. {title} — {lecture} ({date})",
+                         _important_notices(item["summary"]),
+                         f"笔记附件：{filename}", ""])
+            document = (f"# {title}\n\n课次：{lecture}\n\n日期：{date}\n\n"
+                        + item["summary"] + "\n")
+            attachments.append((filename, document.encode("utf-8")))
 
-        body_parts = [toc_html]
-        for course_title, lectures in courses.items():
-            anchor = course_anchors[course_title]
-            body_parts.append(f'<h2 id="{anchor}">{escape(course_title)}</h2>')
-            for lec in lectures:
-                badge = update_badge if lec.get("is_update") else ""
-                body_parts.append(
-                    f"<h3>{badge}{escape(lec['sub_title'])} "
-                    f"<small>({escape(lec['date'])})</small></h3>"
-                )
-                body_parts.append(
-                    _md_to_html(lec["summary"], cid_images=cid_images)
-                )
-                body_parts.append("<hr>")
-
-        html = (
-            "<!DOCTYPE html>"
-            "<html><head><meta charset='utf-8'>"
-            f"<style>{_EMAIL_CSS}\n{_PYGMENTS_CSS}</style>"
-            "</head><body>"
-            + "\n".join(body_parts)
-            + "</body></html>"
-        )
-
-        # Build MIME: related > alternative > (plain, html) + image attachments
-        msg = MIMEMultipart("related")
+        msg = EmailMessage(policy=SMTP)
         msg["Subject"] = subject
         msg["From"] = formataddr(("iCourse Subscriber", self.sender))
         msg["To"] = self.receiver
+        msg["Date"] = formatdate(localtime=False)
+        msg["Message-ID"] = make_msgid()
+        msg.set_content("\n".join(body), charset="utf-8", cte="base64")
+        for filename, content in attachments:
+            msg.add_attachment(content, maintype="text", subtype="markdown",
+                               filename=filename, params={"charset": "utf-8"})
+        return msg
 
-        msg_alt = MIMEMultipart("alternative")
-        msg_alt.attach(MIMEText(plain, "plain", "utf-8"))
-        msg_alt.attach(MIMEText(html, "html", "utf-8"))
-        msg.attach(msg_alt)
-
-        # Attach CID images
-        for cid, png_data in cid_images.items():
-            img_part = MIMEImage(png_data, "png")
-            img_part.add_header("Content-ID", f"<{cid}>")
-            img_part.add_header("Content-Disposition", "inline",
-                                filename=f"{cid}.png")
-            msg.attach(img_part)
-
-        if cid_images:
-            print(f"[Emailer] Embedded {len(cid_images)} LaTeX images as CID")
-
-        # Retry with exponential backoff
+    def send(self, items: list[dict]) -> bool:
+        if not items:
+            print("[Emailer] Nothing to send.")
+            return True
+        if not all((self.sender, self.password, self.receiver)):
+            raise ValueError("SMTP_EMAIL, SMTP_PASSWORD and RECEIVER_EMAIL are required.")
+        msg = self._build_message(items)
+        # Reuse Message-ID on retry; avoid duplicate delivery when QUIT fails
+        # after the SMTP server has already accepted the message.
         for attempt in range(3):
+            accepted = False
             try:
-                with smtplib.SMTP_SSL(self.host, self.port) as server:
+                with smtplib.SMTP_SSL(self.host, self.port, timeout=60) as server:
                     server.login(self.sender, self.password)
-                    server.sendmail(self.sender, self.receiver, msg.as_string())
-                print(f"[Emailer] Sent: {subject}")
+                    refused = server.send_message(
+                        msg, from_addr=self.sender, to_addrs=[self.receiver],
+                    )
+                    if refused:
+                        raise smtplib.SMTPRecipientsRefused(refused)
+                    accepted = True
+                print(f"[Emailer] SMTP accepted {len(items)} Markdown attachment(s).")
                 return True
             except Exception as e:
+                if accepted:
+                    print("[Emailer] SMTP accepted message; connection close failed. "
+                          "Not resending.")
+                    return True
                 print(f"[Emailer] Attempt {attempt + 1}/3 failed: {e}")
                 if attempt < 2:
                     time.sleep(2 ** attempt)
-
-        print("[Emailer] All send attempts failed.")
+        print("[Emailer] All send attempts failed; notes remain unsent for retry.")
         return False
