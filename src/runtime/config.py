@@ -26,12 +26,12 @@ USER_AGENT = (
 # 现的那条；这避免 Summarizer 内部按 name 索引 client 字典时被后写覆盖。
 MODEL_PROVIDERS: list[dict] = [
     {
-        "name": "Fudan",
+        "name": "DeepSeek",
         "api_key_env": "DEEPSEEK_API_KEY",
         "base_url_env": "DEEPSEEK_BASE_URL",
-        
+        "default_base_url": "https://api.deepseek.com",
         "models": [
-            "Deepseek-Flash"
+            "deepseek-flash"
         ],
     }
     
