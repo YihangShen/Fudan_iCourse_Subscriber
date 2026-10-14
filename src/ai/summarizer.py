@@ -1,6 +1,7 @@
 """LLM-based course lecture summarization via ModelScope API."""
 
 import time
+from urllib.parse import urlparse
 
 from openai import OpenAI
 
@@ -67,6 +68,10 @@ SYSTEM_PROMPT= r"""你是一个专业的课程助教。你的任务是根据用�
    - 同时，需要注意的是，由于该平台以屏幕截图的方式记录ppt，因此，尽管我们提供的ocr版本已经尽最大努力进行了清洗，你收到的ppt仍然可能有无关网页、导航栏、桌面或系统页面等无关噪音。这些噪音不应被用于课程内容的总结。
    - 输出仍按之前的格式要求，不要保留时间戳标签，只把这些信息当作上下文辅助理解，不用说哪些来自转写哪些来自ppt，自然地合并录音转写和ppt中的知识，生成高质量笔记。"""
 
+class IncompleteSummaryError(ValueError):
+    """The API returned no usable final answer, or cut it off."""
+
+
 class Summarizer:
     """Course lecture summarizer with multi-provider fallback.
 
@@ -91,6 +96,12 @@ class Summarizer:
     def _call_llm(self, client: OpenAI, model: str,
                   title: str, content: str) -> str:
         t0 = time.time()
+        options = {}
+        if (urlparse(str(client.base_url)).hostname == "api.deepseek.com"
+                and model.lower().startswith("deepseek")):
+            # Notes need the final answer, not a reasoning-only response.
+            options = {"extra_body": {"thinking": {"type": "disabled"}},
+                       "max_tokens": 16384}
         response = client.chat.completions.create(
             model=model,
             messages=[
@@ -104,10 +115,18 @@ class Summarizer:
             ],
             # temperature=0.3,
             timeout=180,
+            **options,
         )
         if not response.choices:
-            raise ValueError("API returned empty choices — likely content filter or quota exceeded")
-        result = response.choices[0].message.content
+            raise IncompleteSummaryError("API returned no choices")
+        choice = response.choices[0]
+        result = choice.message.content
+        reason = getattr(choice, "finish_reason", None)
+        if not isinstance(result, str) or not result.strip():
+            raise IncompleteSummaryError(f"API returned an empty final answer (finish_reason={reason})")
+        if reason in ("length", "content_filter", "tool_calls", "function_call"):
+            raise IncompleteSummaryError(f"API did not complete the summary (finish_reason={reason})")
+        result = result.strip()
         elapsed = time.time() - t0
         # Token usage helps explain run cost — every provider's billing is
         # token-based, and rate-limit decisions key off prompt size much
@@ -146,13 +165,20 @@ class Summarizer:
             client = self._clients[provider["name"]]
             for model in provider["models"]:
                 model_id = f"{provider['name']}/{model}"
-                try:
-                    result = self._call_llm(client, model, title, content)
-                    return (result, model_id)
-                except Exception as e:
-                    print(f"[Summarizer] {model_id} failed: "
-                          f"{type(e).__name__}: {e}")
-                    errors.append(f"{model_id}: {e}")
+                for attempt in range(2):
+                    try:
+                        result = self._call_llm(client, model, title, content)
+                        return (result, model_id)
+                    except IncompleteSummaryError as e:
+                        print(f"[Summarizer] {model_id} attempt {attempt + 1}/2: {e}")
+                        if attempt == 0:
+                            continue
+                        errors.append(f"{model_id}: {e}")
+                    except Exception as e:
+                        print(f"[Summarizer] {model_id} failed: "
+                              f"{type(e).__name__}: {e}")
+                        errors.append(f"{model_id}: {e}")
+                        break
 
         raise RuntimeError(
             "All LLM models failed:\n" + "\n".join(errors)

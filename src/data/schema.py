@@ -82,3 +82,16 @@ LECTURES_MIGRATION_COLUMNS: list[tuple[str, str]] = [
 PPT_PAGES_MIGRATION_COLUMNS: list[tuple[str, str]] = [
     ("dhash", "TEXT"),
 ]
+
+# Old releases accepted empty API answers and marked them processed/emailed.
+# Clear only these invalid summaries; preserve transcript and PPT work.
+# ``schema`` is supplied only by internal callers (main/local).
+EMPTY_SUMMARY_REPAIR_SQL = """
+UPDATE {schema}.lectures SET
+    summary = NULL, summary_model = NULL,
+    processed_at = NULL, emailed_at = NULL,
+    error_count = 0, error_stage = 'summarize',
+    error_msg = 'Empty summary reset for retry'
+WHERE summary IS NOT NULL
+  AND trim(summary, char(9) || char(10) || char(13) || ' ') = ''
+"""

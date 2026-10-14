@@ -12,6 +12,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data.schema import (
+    EMPTY_SUMMARY_REPAIR_SQL,
     LECTURES_MIGRATION_COLUMNS,
     PPT_PAGES_MIGRATION_COLUMNS,
     SCHEMA_SQL,
@@ -65,6 +66,10 @@ def merge(local_path: str, remote_path: str):
 
     try:
         with conn:
+            # Normalize both snapshots so stale processed/emailed flags from
+            # an empty response cannot reappear through COALESCE below.
+            for schema in ("main", "local"):
+                conn.execute(EMPTY_SUMMARY_REPAIR_SQL.format(schema=schema))
             # 1) Courses: upsert
             conn.execute("""
                 INSERT OR REPLACE INTO main.courses (course_id, title, teacher)

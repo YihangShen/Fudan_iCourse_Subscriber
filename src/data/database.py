@@ -7,6 +7,7 @@ from datetime import datetime
 
 from src.runtime import config
 from src.data.schema import (
+    EMPTY_SUMMARY_REPAIR_SQL,
     LECTURES_MIGRATION_COLUMNS,
     PPT_PAGES_MIGRATION_COLUMNS,
     SCHEMA_SQL,
@@ -65,6 +66,11 @@ class Database:
                     self.conn.execute(
                         f"ALTER TABLE ppt_pages ADD COLUMN {col} {typedef}"
                     )
+            repaired = self.conn.execute(
+                EMPTY_SUMMARY_REPAIR_SQL.format(schema="main")
+            ).rowcount
+            if repaired:
+                print(f"[Database] Reset {repaired} empty summary/summaries for retry.")
 
     def write_meta(self, key: str, value: str):
         """Persist a key-value pair (e.g. COURSE_IDS from CI secret)."""
@@ -389,6 +395,8 @@ class Database:
 
     def update_summary(self, sub_id: str, summary: str, model: str):
         """Save summary and model name."""
+        if not isinstance(summary, str) or not summary.strip():
+            raise ValueError("Cannot save an empty summary")
         with self._lock, self.conn:
             self.conn.execute(
                 """UPDATE lectures
@@ -414,7 +422,8 @@ class Database:
                    JOIN courses c ON l.course_id = c.course_id
                    WHERE l.processed_at IS NOT NULL
                      AND l.emailed_at IS NULL
-                     AND l.summary IS NOT NULL""",
+                     AND l.summary IS NOT NULL
+                     AND trim(l.summary, char(9) || char(10) || char(13) || ' ') <> ''""",
             ).fetchall()
         return [dict(row) for row in rows]
 

@@ -338,6 +338,9 @@ class Emailer:
         self.receiver = config.RECEIVER_EMAIL.strip()
 
     def _build_message(self, items: list[dict]) -> EmailMessage:
+        if any(not isinstance(item.get("summary"), str)
+               or not item["summary"].strip() for item in items):
+            raise ValueError("Cannot send an empty summary; regenerate the notes first.")
         courses: OrderedDict[str, list[dict]] = OrderedDict()
         for item in items:
             courses.setdefault(item["course_title"], []).append(item)
