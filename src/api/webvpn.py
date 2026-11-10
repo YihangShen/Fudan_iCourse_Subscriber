@@ -45,6 +45,32 @@ def totp_code(secret: str, timestamp: float | None = None) -> str:
     return f"{number % 1_000_000:06d}"
 
 
+_TOTP_STEP = 30
+_last_totp_counter: int | None = None
+
+
+def fresh_totp_code(secret: str) -> str:
+    """Return a TOTP code from a window that has not been submitted yet.
+
+    login_with_retry() can run several full logins within one 30-second
+    window (e.g. when the WebVPN probe reports a cold session).  Identity
+    providers usually reject a reused OTP as a replay, which would raise
+    SecondFactorError and stop the whole run, so wait for the next window.
+    """
+    global _last_totp_counter
+    now = time.time()
+    counter = int(now // _TOTP_STEP)
+    if _last_totp_counter is not None and counter <= _last_totp_counter:
+        wait = (_last_totp_counter + 1) * _TOTP_STEP - now + 1
+        print(f"[Login] Waiting {wait:.0f}s for a fresh TOTP window...")
+        time.sleep(max(wait, 0))
+        now = time.time()
+        counter = int(now // _TOTP_STEP)
+    code = totp_code(secret, now)
+    _last_totp_counter = counter
+    return code
+
+
 def encrypt_host(hostname: str) -> str:
     """Encrypt hostname using AES-128-CFB for WebVPN URL encoding.
 
@@ -585,7 +611,7 @@ class WebVPNSession:
             )
         if not challenge.get("requestNumber") or not challenge.get("authChainCode"):
             raise SecondFactorError("TOTP challenge is missing its authentication context")
-        code = totp_code(config.TOTP_SECRET)
+        code = fresh_totp_code(config.TOTP_SECRET)
         base = get_vpn_url(config.IDP_BASE) if via_vpn else config.IDP_BASE
         origin = config.WEBVPN_BASE if via_vpn else config.IDP_BASE
         print("[Login] TOTP second factor...")
