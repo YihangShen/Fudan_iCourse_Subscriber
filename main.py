@@ -13,6 +13,7 @@ AudioDownloader.  This file does only orchestration:
 Anything more interesting belongs in one of ``src/*`` modules.
 """
 
+import os
 import time
 import traceback
 
@@ -323,7 +324,9 @@ def run():
     if corrected:
         print(f"  [Date] Synced {corrected} lecture date(s) from sub_title", flush=True)
     transcriber = Transcriber()
-    summarizer = Summarizer() if config.COURSE_IDS else None
+    summarizer = Summarizer() if (
+        config.COURSE_IDS and not os.environ.get("NO_LLM_SUMMARY")
+    ) else None
     emailer = Emailer() if (
         config.SMTP_EMAIL.strip() and config.SMTP_PASSWORD.strip()
         and config.RECEIVER_EMAIL.strip()
@@ -360,7 +363,10 @@ def run():
     # Deliver completed notes even if other lectures failed. Only successful
     # SMTP submissions are marked emailed, so failures are retried next run.
     try:
-        _send_email(emailer, db, reporter, email_items)
+        if os.environ.get("NO_LLM_SUMMARY"):
+            reporter.info("[Email] Skipped (NO_LLM_SUMMARY mode).")
+        else:
+            _send_email(emailer, db, reporter, email_items)
     except Exception:
         failures.append("Email delivery failed")
         traceback.print_exc()
