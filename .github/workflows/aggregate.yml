@@ -1,6 +1,9 @@
 name: Aggregate Course Markdown
 
 on:
+  push:
+    branches:
+      - codex/aggregate-setgraph-20261120
   workflow_dispatch:
     inputs:
       course_id:
@@ -90,13 +93,13 @@ jobs:
 
       - name: Aggregate course notes
         env:
-          COURSE_ID: ${{ inputs.course_id }}
+          COURSE_ID: ${{ inputs.course_id || '38095' }}
         run: |
           python -u scripts/aggregate_course.py data/icourse.db "$COURSE_ID" out
 
       - name: Upload aggregated Markdown
         uses: actions/upload-artifact@v4
         with:
-          name: course-notes-${{ inputs.course_id }}
+          name: course-notes-${{ inputs.course_id || '38095' }}
           path: out/
           retention-days: 3
