@@ -1,9 +1,9 @@
 name: Aggregate Course Markdown
 
 on:
-  push:
+  pull_request:
     branches:
-      - codex/aggregate-setgraph-20261120
+      - main
   workflow_dispatch:
     inputs:
       course_id:
