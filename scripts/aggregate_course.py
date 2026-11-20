@@ -31,6 +31,23 @@ def _safe(s: str) -> str:
     return re.sub(r"[^\w\-一-鿿]", "_", s)[:80]
 
 
+_HEADING_RE = re.compile(r"^(#{1,6})(\s+)(.*)$")
+
+
+def demote(md: str, levels: int = 2) -> str:
+    """Push inner headings of a lecture summary down so they nest under the
+    section's own ``##`` heading instead of competing with it."""
+    out = []
+    for line in md.splitlines():
+        m = _HEADING_RE.match(line)
+        if m:
+            new_level = min(6, len(m.group(1)) + levels)
+            out.append("#" * new_level + m.group(2) + m.group(3))
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
 def anchor(title: str) -> str:
     """Approximate GitHub heading anchor generation."""
     t = title.strip().lower()
@@ -143,7 +160,7 @@ def main() -> int:
         parts.append("")
         body = (lec.get("summary") or "").strip()
         if body:
-            parts.append(body)
+            parts.append(demote(body))
         else:
             reason = lec.get("error_stage") or "尚未处理"
             missing.append((label, lec["sub_id"], reason))

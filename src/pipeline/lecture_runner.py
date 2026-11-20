@@ -356,6 +356,8 @@ class LectureRunner:
             prompt_text, mode = bucketer.assemble(
                 transcript, transcript_segments, kept_pages,
             )
+            if self._summarizer is None:
+                return self._dump_prompt_only(sub_id, course_title, prompt_text, mode)
             self._reporter.info(
                 f"    [Time] Generating summary at "
                 f"{time.strftime('%H:%M:%S')}"
@@ -375,6 +377,34 @@ class LectureRunner:
             )
             self._db.update_error(sub_id, "summarize", str(e))
             raise
+
+    def _dump_prompt_only(self, sub_id: str, course_title: str,
+                          prompt_text: str, mode: str) -> str:
+        """NO_LLM_SUMMARY mode: persist the assembled prompt (transcript +
+        slide OCR) to ``data/transcripts/<sub_id>.md`` so an external
+        writer can produce the notes, and store a placeholder summary."""
+        out_dir = os.path.join(os.getcwd(), "data", "transcripts")
+        os.makedirs(out_dir, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        body = (
+            f"# {course_title} — sub_id {sub_id}\n\n"
+            f"<!-- generated {stamp} · mode={mode} · chars={len(prompt_text)} -->\n\n"
+            f"{prompt_text}\n"
+        )
+        with open(os.path.join(out_dir, f"{sub_id}.md"), "w", encoding="utf-8") as f:
+            f.write(body)
+        placeholder = (
+            "> 本讲笔记待外部模型补写（NO_LLM_SUMMARY 模式，转写稿已保存）。"
+        )
+        try:
+            self._db.update_summary(sub_id, placeholder, "transcript-only")
+        except Exception as e:
+            self._reporter.info(f"    [WARN] placeholder summary save failed: {e}")
+        self._reporter.info(
+            f"    [NO-LLM] dumped prompt {len(prompt_text)} chars "
+            f"→ data/transcripts/{sub_id}.md"
+        )
+        return placeholder
 
     def _release_audio(self, sub_id: str):
         try:

@@ -1,0 +1,175 @@
+name: Transcript Dump (no LLM)
+
+on:
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache Python packages
+        id: cache-pip
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.pythonLocation }}/lib/python*/site-packages
+          key: pip-${{ hashFiles('requirements.txt') }}
+
+      - name: Install Python dependencies
+        if: steps.cache-pip.outputs.cache-hit != 'true'
+        run: pip install -r requirements.txt
+
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+
+
+      - name: Cache ASR models
+        id: cache-models
+        uses: actions/cache@v4
+        with:
+          path: |
+            sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17/
+            silero_vad.onnx
+          key: asr-models-sense-voice-2024-07-17
+
+      - name: Download ASR models
+        if: steps.cache-models.outputs.cache-hit != 'true'
+        run: |
+          wget -q https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2
+          tar xf sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2
+          rm sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17.tar.bz2
+          wget -q https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/silero_vad.onnx
+
+      - name: Cache RapidOCR models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/rapidocr
+          key: rapidocr-onnx-default-v1
+
+      - name: Fetch database from data branch
+        run: |
+          mkdir -p data
+          git fetch --depth=1 origin "+refs/heads/data:refs/remotes/origin/data" 2>/dev/null \
+            || { echo "No data branch, starting fresh."; exit 0; }
+          git ls-tree origin/data --name-only data/ | grep -q . \
+            || { echo "No database found on data branch, starting fresh."; exit 0; }
+          if git cat-file -e origin/data:data/icourse-index.enc 2>/dev/null; then
+            mkdir -p data/sharded/shards
+            git show origin/data:data/icourse-index.enc > data/sharded/icourse-index.enc
+            shard_paths=$(git ls-tree -r --name-only origin/data | grep '^data/shards/' || true)
+            for path in $shard_paths; do
+              base=$(basename "$path")
+              git show "origin/data:$path" > "data/sharded/shards/$base"
+            done
+            echo "Loaded $(ls data/sharded/shards 2>/dev/null | wc -l) shard(s)."
+          elif git cat-file -e origin/data:data/icourse.db.gz.enc 2>/dev/null; then
+            git show origin/data:data/icourse.db.gz.enc > data/icourse.db.gz.enc
+            echo "Loaded legacy compressed database."
+          elif git cat-file -e origin/data:data/icourse.db.enc 2>/dev/null; then
+            git show origin/data:data/icourse.db.enc > data/icourse.db.enc
+            echo "Loaded legacy uncompressed database."
+          else
+            echo "No database found on data branch, starting fresh."
+          fi
+
+      - name: Decode database
+        if: hashFiles('data/sharded/icourse-index.enc', 'data/icourse.db.gz.enc', 'data/icourse.db.enc') != ''
+        env:
+          STUID: ${{ secrets.STUID }}
+          UISPSW: ${{ secrets.UISPSW }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+        run: |
+          if [ -f data/sharded/icourse-index.enc ]; then
+            python scripts/db_shard.py reassemble data/sharded data/icourse.db
+            echo "Reassembled sharded database."
+            exit 0
+          fi
+
+          NEW_KEY=$(printf '%s' "ICSv2:${STUID}:${UISPSW}" | sha256sum | cut -d' ' -f1)
+          LEGACY_KEY="${STUID}${UISPSW}${DASHSCOPE_API_KEY}${SMTP_PASSWORD}"
+
+          decrypt_blob() {
+            local in_path="$1"
+            local out_path="$2"
+            if openssl enc -aes-256-cbc -d -pbkdf2 -iter 100000 \
+                 -in "$in_path" -out "$out_path" \
+                 -pass pass:"$NEW_KEY" 2>/dev/null; then
+              echo "v2"
+              return 0
+            fi
+            if openssl enc -aes-256-cbc -d -pbkdf2 \
+                 -in "$in_path" -out "$out_path" \
+                 -pass pass:"$LEGACY_KEY" 2>/dev/null; then
+              echo "legacy"
+              return 0
+            fi
+            return 1
+          }
+
+          if [ -f data/icourse.db.gz.enc ]; then
+            if VER=$(decrypt_blob data/icourse.db.gz.enc data/icourse.db.gz); then
+              gzip -d data/icourse.db.gz
+              echo "Legacy compressed DB decrypted ($VER)."
+            else
+              echo "::warning::Decryption failed (both keys). Starting with fresh database."
+              rm -f data/icourse.db data/icourse.db.gz
+            fi
+          elif [ -f data/icourse.db.enc ]; then
+            if VER=$(decrypt_blob data/icourse.db.enc data/icourse.db); then
+              echo "Legacy uncompressed DB decrypted ($VER)."
+            else
+              echo "::warning::Decryption failed (both keys). Starting with fresh database."
+              rm -f data/icourse.db
+            fi
+          fi
+
+      - name: Record database state
+        id: db-before
+        run: |
+          if [ -f data/icourse.db ]; then
+            echo "hash=$(md5sum data/icourse.db | cut -d' ' -f1)" >> $GITHUB_OUTPUT
+          else
+            echo "hash=none" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Run (transcript dump only)
+        timeout-minutes: 350
+        env:
+          StuId: ${{ secrets.STUID }}
+          UISPsw: ${{ secrets.UISPSW }}
+          UIS_TOTP_SECRET: ${{ secrets.UIS_TOTP_SECRET }}
+          COURSE_IDS: "38095"
+          NO_LLM_SUMMARY: "1"
+          SMTP_EMAIL: ${{ secrets.SMTP_EMAIL }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          RECEIVER_EMAIL: ${{ secrets.RECEIVER_EMAIL }}
+        run: |
+          python -u main.py
+
+      - name: List dumps
+        if: always()
+        run: ls -la data/transcripts 2>/dev/null || echo "no transcripts"
+
+      - name: Upload transcripts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: transcripts-38095
+          path: data/transcripts/
+          retention-days: 7
